@@ -1,0 +1,49 @@
+# Secrets
+.env
+
+# M48.3 prereq — TLS material (Tailscale `*.ts.net` certs from `tailscale cert`).
+# Belt-and-suspenders: the files SHOULD live in %LOCALAPPDATA%\Jarvis\tls\ (out
+# of the repo entirely) but if anyone ever points the .env paths into the repo
+# or runs `tailscale cert` from here, these patterns keep the key out of git.
+*.crt
+*.key
+*.pem
+tls/
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Model caches (openWakeWord and faster-whisper download models on first run)
+.cache/
+models/
+*.onnx
+*.tflite
+
+# YOLO weights (M34 — security mode auto-downloads yolov8n.pt on first arm).
+# Ultralytics puts it in the current working directory by default, so it
+# lands in the repo root when Jarvis is run from there. ~6MB, regenerates.
+*.pt
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Claude Code local settings (per-user permission overrides)
+.claude/settings.local.json
+
+# Build artifacts
+build/
+dist/
+*.log
+
+# Generated icon — autostart.py regenerates lazily on first shortcut creation
+assets/jarvis.ico

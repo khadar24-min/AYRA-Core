@@ -1,0 +1,381 @@
+"""System tray icon with state indicator. SPEAKING state pulses to look alive.
+
+Threading: pystray's Icon.run() blocks the calling thread, hooking the Win32
+message pump. On Windows it can run on either the main thread or a worker
+thread; in the M8+ architecture it runs on a worker so the main thread is
+free for Tk's mainloop (which strongly prefers the main thread).
+
+A daemon animation thread updates icon.icon and icon.title on state changes,
+and pulses brightness while in SPEAKING. State transitions arrive via
+set_state(); we wake the animation thread with an Event so it re-renders
+immediately rather than waiting on its sleep timer.
+
+Menu callbacks (Reset, Open log, Show window, Quit) run on pystray's own
+thread. They post intent via callbacks the caller wires up — we don't touch
+listen-loop or UI state directly from here.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import sys
+import threading
+import time
+from enum import Enum
+from pathlib import Path
+from typing import Callable
+
+import pystray
+from PIL import Image, ImageDraw
+
+
+class State(Enum):
+    IDLE = (128, 128, 128)        # gray
+    LISTENING = (51, 153, 255)    # blue
+    THINKING = (255, 204, 0)      # amber/yellow
+    SPEAKING = (51, 204, 51)      # green
+
+
+def _make_circle(rgb: tuple[int, int, int], brightness: float = 1.0, size: int = 64) -> Image.Image:
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    r, g, b = rgb
+    color = (int(r * brightness), int(g * brightness), int(b * brightness), 255)
+    draw.ellipse([4, 4, size - 4, size - 4], fill=color)
+    return img
+
+
+class JarvisTray:
+    """Tray icon manager. Call set_state() from any thread; run() blocks the caller."""
+
+    def __init__(
+        self,
+        on_quit: Callable[[], None],
+        on_reset: Callable[[], None] | None = None,
+        on_show_window: Callable[[], None] | None = None,
+        log_path: Path | None = None,
+        memory_dir: Path | None = None,
+        autostart_enabled: Callable[[], bool] | None = None,
+        on_autostart_toggle: Callable[[], None] | None = None,
+        mute_enabled: Callable[[], bool] | None = None,
+        on_mute_toggle: Callable[[], None] | None = None,
+        engineer_enabled: Callable[[], bool] | None = None,
+        on_engineer_toggle: Callable[[], None] | None = None,
+        security_enabled: Callable[[], bool] | None = None,
+        on_security_toggle: Callable[[], None] | None = None,
+        homelab_enabled: Callable[[], bool] | None = None,
+        on_homelab_toggle: Callable[[], None] | None = None,
+        acoustic_enabled: Callable[[], bool] | None = None,
+        on_acoustic_toggle: Callable[[], None] | None = None,
+        on_enroll_face: Callable[[], None] | None = None,
+        on_enroll_voice: Callable[[], None] | None = None,
+        speaker_gate_enabled: Callable[[], bool] | None = None,
+        on_speaker_gate_toggle: Callable[[], None] | None = None,
+        on_reindex_knowledge: Callable[[], None] | None = None,
+        on_restart: Callable[[], None] | None = None,
+        on_restart_elevated: Callable[[], None] | None = None,
+        on_create_shortcut: Callable[[], None] | None = None,
+        shutdown_event: threading.Event | None = None,
+    ) -> None:
+        # Allow caller to share a shutdown event (UI coordinator) so a single
+        # signal coordinates listen_loop, tray animation, and Tk teardown.
+        self.shutdown = shutdown_event if shutdown_event is not None else threading.Event()
+        self._state = State.IDLE
+        self._state_changed = threading.Event()
+        self._on_quit = on_quit
+        self._on_reset = on_reset
+        self._on_show_window = on_show_window
+        self._log_path = log_path
+        self._memory_dir = memory_dir
+        self._autostart_enabled = autostart_enabled
+        self._on_autostart_toggle = on_autostart_toggle
+        self._mute_enabled = mute_enabled
+        self._on_mute_toggle = on_mute_toggle
+        self._engineer_enabled = engineer_enabled
+        self._on_engineer_toggle = on_engineer_toggle
+        self._security_enabled = security_enabled
+        self._on_security_toggle = on_security_toggle
+        self._homelab_enabled = homelab_enabled
+        self._on_homelab_toggle = on_homelab_toggle
+        self._acoustic_enabled = acoustic_enabled
+        self._on_acoustic_toggle = on_acoustic_toggle
+        self._on_enroll_face = on_enroll_face
+        self._on_enroll_voice = on_enroll_voice
+        self._speaker_gate_enabled = speaker_gate_enabled
+        self._on_speaker_gate_toggle = on_speaker_gate_toggle
+        self._on_reindex_knowledge = on_reindex_knowledge
+        self._on_restart = on_restart
+        self._on_restart_elevated = on_restart_elevated
+        self._on_create_shortcut = on_create_shortcut
+
+        menu_items: list[pystray.MenuItem] = []
+        if on_show_window is not None:
+            menu_items.append(pystray.MenuItem("Show window", self._handle_show_window, default=True))
+        if on_reset is not None:
+            menu_items.append(pystray.MenuItem("Reset conversation", self._handle_reset))
+        if log_path is not None:
+            menu_items.append(pystray.MenuItem("Open log", self._handle_open_log))
+        if memory_dir is not None:
+            menu_items.append(pystray.MenuItem("Open memory folder", self._handle_open_memory))
+        if on_create_shortcut is not None:
+            # One-shot utility: drops a Jarvis.lnk on the Desktop, then opens
+            # Explorer with it selected so the user can right-click → Pin to
+            # taskbar. Windows blocks programmatic pinning, so this is the
+            # closest we can get to a "pin to taskbar" button.
+            menu_items.append(pystray.MenuItem(
+                "Create desktop shortcut", self._handle_create_shortcut,
+            ))
+        if mute_enabled is not None and on_mute_toggle is not None:
+            # Voice-output mute. Toggle bypasses TTS while leaving voice input
+            # + console transcript fully working — useful when someone's
+            # sleeping nearby. State lives on JarvisUI's mute_event; the
+            # `checked` lambda re-evaluates each menu open.
+            menu_items.append(pystray.MenuItem(
+                "Mute (text only)",
+                self._handle_toggle_mute,
+                checked=lambda item: bool(self._mute_enabled()),
+            ))
+        if engineer_enabled is not None and on_engineer_toggle is not None:
+            # Engineer mode: extended thinking + permission for longer,
+            # structured replies (paragraphs, bullets, code blocks). Costs
+            # more tokens; off by default. Independent of mute.
+            menu_items.append(pystray.MenuItem(
+                "Engineer mode",
+                self._handle_toggle_engineer,
+                checked=lambda item: bool(self._engineer_enabled()),
+            ))
+        if security_enabled is not None and on_security_toggle is not None:
+            # Security mode (M34): arms the proactive vision watcher. Same
+            # state Voice "activate security" / "stand down" controls — the
+            # tray toggle is just a faster surface for testing. Overrides
+            # mute (security alerts are louder than quiet hours).
+            menu_items.append(pystray.MenuItem(
+                "Security mode",
+                self._handle_toggle_security,
+                checked=lambda item: bool(self._security_enabled()),
+            ))
+        if homelab_enabled is not None and on_homelab_toggle is not None:
+            # Homelab monitoring (M56): starts/stops the proactive background
+            # watcher — Plex-laptop reachability, Plex liveness, disk space.
+            # Same state the JARVIS_HOMELAB_MONITOR .env flag sets at startup;
+            # `checked` re-evaluates each menu open so it tracks voice/.env
+            # changes too.
+            menu_items.append(pystray.MenuItem(
+                "Homelab monitoring",
+                self._handle_toggle_homelab,
+                checked=lambda item: bool(self._homelab_enabled()),
+            ))
+        if acoustic_enabled is not None and on_acoustic_toggle is not None:
+            # Acoustic awareness (M58): starts/stops the ambient-sound
+            # classifier — doorbell, knock, smoke alarm, glass break, phone,
+            # kitchen timer, running water (experimental). Same state the
+            # JARVIS_ACOUSTIC_MONITOR .env flag sets at startup. First arm
+            # is heavy (downloads the ~325 MB Cnn14 checkpoint on a fresh
+            # install) — subsequent arms are quick.
+            menu_items.append(pystray.MenuItem(
+                "Acoustic awareness",
+                self._handle_toggle_acoustic,
+                checked=lambda item: bool(self._acoustic_enabled()),
+            ))
+        if speaker_gate_enabled is not None and on_speaker_gate_toggle is not None:
+            # Voice lock (M69 Phase 4): when checked, Jarvis answers only
+            # enrolled voices and ignores confidently-unrecognized ones (e.g.
+            # the TV). Fail-open — a degraded clip of an enrolled user still
+            # passes. Same state the JARVIS_SPEAKER_GATE .env flag sets.
+            menu_items.append(pystray.MenuItem(
+                "Voice lock (only enrolled voices)",
+                self._handle_toggle_speaker_gate,
+                checked=lambda item: bool(self._speaker_gate_enabled()),
+            ))
+        if on_enroll_face is not None:
+            # M39: enroll the user's face for the security-mode auth path.
+            # Voice-driven flow (Jarvis announces, captures, announces
+            # result) — no popup, matches the rest of Jarvis's voice-first
+            # interaction. Same callback fires from the voice intent
+            # "Jarvis, enroll my face" via main.py's listen_loop.
+            menu_items.append(pystray.MenuItem(
+                "Enroll my face", self._handle_enroll_face,
+            ))
+        if on_enroll_voice is not None:
+            # M69: enroll the user's voice for speaker ID. Same voice-first
+            # flow (Jarvis announces, records, announces result) and the same
+            # callback the "Jarvis, enroll my voice" intent fires.
+            menu_items.append(pystray.MenuItem(
+                "Enroll my voice", self._handle_enroll_voice,
+            ))
+        if on_reindex_knowledge is not None:
+            # M45: rebuild the FTS5 knowledge index from the corpus folder.
+            # Same voice-first flow as enrollment (Jarvis announces the
+            # result) and the same callback the "Jarvis, update your
+            # knowledge" voice intent fires. Use it after editing files in
+            # the knowledge folder by hand.
+            menu_items.append(pystray.MenuItem(
+                "Reindex knowledge", self._handle_reindex_knowledge,
+            ))
+        if autostart_enabled is not None and on_autostart_toggle is not None:
+            # Pystray re-evaluates `checked` each time the menu opens, so the
+            # checkmark stays in sync if the shortcut is added/removed externally.
+            menu_items.append(pystray.MenuItem(
+                "Start with Windows",
+                self._handle_toggle_autostart,
+                checked=lambda item: bool(self._autostart_enabled()),
+            ))
+        if menu_items:
+            menu_items.append(pystray.Menu.SEPARATOR)
+        if on_restart is not None:
+            # Sibling of Quit — same teardown path, then a detached relaunch
+            # of jarvis.pyw after the current process finishes sealing the
+            # session. See JarvisUI._handle_restart for the flag-and-defer
+            # mechanics; the relaunch itself fires from main() after worker
+            # join, so the new instance doesn't fight the old one for the mic.
+            menu_items.append(pystray.MenuItem("Restart Jarvis", self._handle_restart))
+        if on_restart_elevated is not None:
+            # M41: "Restart Jarvis (Administrator)" — only shown when the
+            # current process is NOT already elevated. No point offering an
+            # upgrade path when there's nothing to upgrade to; hiding the
+            # item also signals to the user, at-a-glance, that the current
+            # session already has SRE-grade powers. Same flag-and-defer
+            # plumbing as the normal restart; the only delta is that the
+            # final spawn uses ShellExecuteW(verb="runas"), which fires a
+            # UAC prompt. See autostart.relaunch_elevated().
+            from src.autostart import is_admin  # noqa: PLC0415 — defer to break import cycle
+            if not is_admin():
+                menu_items.append(pystray.MenuItem(
+                    "Restart Jarvis (Administrator)", self._handle_restart_elevated,
+                ))
+        menu_items.append(pystray.MenuItem("Quit", self._handle_quit))
+
+        self.icon = pystray.Icon(
+            "jarvis",
+            _make_circle(State.IDLE.value),
+            "Jarvis (idle)",
+            menu=pystray.Menu(*menu_items),
+        )
+
+    def _handle_quit(self) -> None:
+        self.shutdown.set()
+        self._state_changed.set()
+        try:
+            self._on_quit()
+        finally:
+            self.icon.stop()
+
+    def _handle_reset(self) -> None:
+        if self._on_reset is not None:
+            self._on_reset()
+
+    def _handle_show_window(self) -> None:
+        if self._on_show_window is not None:
+            self._on_show_window()
+
+    def _handle_toggle_autostart(self) -> None:
+        if self._on_autostart_toggle is not None:
+            self._on_autostart_toggle()
+
+    def _handle_toggle_mute(self) -> None:
+        if self._on_mute_toggle is not None:
+            self._on_mute_toggle()
+
+    def _handle_toggle_engineer(self) -> None:
+        if self._on_engineer_toggle is not None:
+            self._on_engineer_toggle()
+
+    def _handle_toggle_security(self) -> None:
+        if self._on_security_toggle is not None:
+            self._on_security_toggle()
+
+    def _handle_toggle_homelab(self) -> None:
+        if self._on_homelab_toggle is not None:
+            self._on_homelab_toggle()
+
+    def _handle_toggle_acoustic(self) -> None:
+        if self._on_acoustic_toggle is not None:
+            self._on_acoustic_toggle()
+
+    def _handle_enroll_face(self) -> None:
+        if self._on_enroll_face is not None:
+            self._on_enroll_face()
+
+    def _handle_enroll_voice(self) -> None:
+        if self._on_enroll_voice is not None:
+            self._on_enroll_voice()
+
+    def _handle_toggle_speaker_gate(self) -> None:
+        if self._on_speaker_gate_toggle is not None:
+            self._on_speaker_gate_toggle()
+
+    def _handle_reindex_knowledge(self) -> None:
+        if self._on_reindex_knowledge is not None:
+            self._on_reindex_knowledge()
+
+    def _handle_restart(self) -> None:
+        if self._on_restart is not None:
+            self._on_restart()
+
+    def _handle_restart_elevated(self) -> None:
+        if self._on_restart_elevated is not None:
+            self._on_restart_elevated()
+
+    def _handle_create_shortcut(self) -> None:
+        if self._on_create_shortcut is not None:
+            self._on_create_shortcut()
+
+    def _handle_open_log(self) -> None:
+        if self._log_path is not None and self._log_path.exists():
+            os.startfile(str(self._log_path))  # type: ignore[attr-defined]
+
+    def _handle_open_memory(self) -> None:
+        # Opens %LOCALAPPDATA%\Jarvis\ — gets the user one click away from
+        # jarvis.log, summaries.jsonl, and the sessions/ folder all at once.
+        if self._memory_dir is not None and self._memory_dir.exists():
+            os.startfile(str(self._memory_dir))  # type: ignore[attr-defined]
+
+    def set_state(self, state: State) -> None:
+        self._state = state
+        self._state_changed.set()
+
+    def _animation_loop(self) -> None:
+        # 2026-08-18 audit: the per-iteration body is GUARDED. This thread
+        # writes to pystray's icon (a Win32 resource) and builds PIL images —
+        # both can raise while the icon is being torn down, and an escape here
+        # kills the thread silently. The consequence is not a missing
+        # animation: the tray icon is the primary status indicator, so a dead
+        # loop FREEZES it on whatever state it last drew, which then actively
+        # misinforms (a "speaking" dot on an idle assistant). Same failure mode
+        # as the M100 Announcer death — decoration must never be able to kill
+        # its own worker.
+        errors = 0
+        while not self.shutdown.is_set():
+            try:
+                state = self._state
+                self.icon.title = f"Jarvis ({state.name.lower()})"
+
+                if state == State.SPEAKING:
+                    # Sine-wave pulse, brightness 0.4..1.0 at 2 Hz, 8 fps.
+                    t = time.time()
+                    brightness = 0.7 + 0.3 * math.sin(t * 2 * math.pi * 2)
+                    self.icon.icon = _make_circle(state.value, brightness)
+                    time.sleep(1 / 8)
+                else:
+                    self.icon.icon = _make_circle(state.value, 1.0)
+                    # Park until next state change (or 2s safety timeout).
+                    self._state_changed.wait(timeout=2.0)
+                    self._state_changed.clear()
+                errors = 0
+            except Exception as exc:  # noqa: BLE001 — the loop MUST survive
+                # Log the first few only: if the icon is gone for good this
+                # would otherwise spin a log line every 2 s forever.
+                errors += 1
+                if errors <= 3:
+                    print(f"[tray] animation tick failed "
+                          f"({type(exc).__name__}: {exc})"
+                          + (" — further occurrences suppressed"
+                             if errors == 3 else ""), file=sys.stderr)
+                self.shutdown.wait(timeout=1.0)
+
+    def run(self) -> None:
+        """Blocks. Runs the icon event loop. Animation runs in a daemon thread."""
+        anim_thread = threading.Thread(target=self._animation_loop, daemon=True)
+        anim_thread.start()
+        self.icon.run()

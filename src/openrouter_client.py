@@ -1,0 +1,419 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any
+
+from openai import OpenAI
+
+
+@dataclass
+class Usage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+
+@dataclass
+class Block:
+    type: str
+    text: str | None = None
+    name: str | None = None
+    id: str | None = None
+    input: dict[str, Any] | None = None
+
+
+@dataclass
+class FinalMessage:
+    content: list[Block]
+    stop_reason: str
+    usage: Usage
+    container: Any = None
+
+
+class Stream:
+    def __init__(self, client: OpenAI, kwargs: dict[str, Any]):
+        self.client = client
+        self.kwargs = kwargs
+        self.response = None
+        self.final: FinalMessage | None = None
+
+    def __enter__(self):
+        request = self._build_request()
+        request["stream"] = True
+
+        self.response = self.client.chat.completions.create(**request)
+
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.response is not None:
+            close = getattr(self.response, "close", None)
+            if close:
+                close()
+        return False
+
+    @staticmethod
+    def _system_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+
+        if isinstance(value, list):
+            parts: list[str] = []
+            for block in value:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text", "")))
+            return "\n\n".join(parts)
+
+        return str(value)
+
+    @staticmethod
+    def _tool_result_content(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+
+        if isinstance(value, list):
+            text_parts: list[str] = []
+
+            for item in value:
+                if not isinstance(item, dict):
+                    text_parts.append(str(item))
+                    continue
+
+                if item.get("type") == "text":
+                    text_parts.append(str(item.get("text", "")))
+
+                elif item.get("type") == "image":
+                    text_parts.append("[image result attached]")
+
+            return "\n".join(text_parts)
+
+        return str(value)
+
+    @classmethod
+    def _convert_messages(cls, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+
+        for message in messages:
+            role = message.get("role")
+            content = message.get("content")
+
+            if role == "system":
+                result.append(
+                    {
+                        "role": "system",
+                        "content": cls._system_text(content),
+                    }
+                )
+                continue
+
+            if role == "assistant" and isinstance(content, list):
+                text_parts: list[str] = []
+                tool_calls: list[dict[str, Any]] = []
+
+                for block in content:
+                    block_type = getattr(block, "type", None)
+
+                    if block_type == "text":
+                        if getattr(block, "text", None):
+                            text_parts.append(block.text)
+
+                    elif block_type == "tool_use":
+                        tool_calls.append(
+                            {
+                                "id": block.id,
+                                "type": "function",
+                                "function": {
+                                    "name": block.name,
+                                    "arguments": json.dumps(block.input or {}),
+                                },
+                            }
+                        )
+
+                    elif isinstance(block, dict):
+                        if block.get("type") == "text":
+                            text_parts.append(str(block.get("text", "")))
+
+                        elif block.get("type") == "tool_use":
+                            tool_calls.append(
+                                {
+                                    "id": block.get("id"),
+                                    "type": "function",
+                                    "function": {
+                                        "name": block.get("name"),
+                                        "arguments": json.dumps(
+                                            block.get("input") or {}
+                                        ),
+                                    },
+                                }
+                            )
+
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "\n".join(text_parts) if text_parts else None,
+                }
+
+                if tool_calls:
+                    assistant_message["tool_calls"] = tool_calls
+
+                result.append(assistant_message)
+                continue
+
+            if role == "user" and isinstance(content, list):
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                    ):
+                        result.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": block.get("tool_use_id", ""),
+                                "content": cls._tool_result_content(
+                                    block.get("content", "")
+                                ),
+                            }
+                        )
+                    else:
+                        result.append(
+                            {
+                                "role": "user",
+                                "content": cls._tool_result_content(block),
+                            }
+                        )
+                continue
+
+            result.append(
+                {
+                    "role": role,
+                    "content": content,
+                }
+            )
+
+        return result
+
+    def _build_request(self) -> dict[str, Any]:
+        request: dict[str, Any] = {
+            "model": self.kwargs["model"],
+            "messages": self._convert_messages(
+                self.kwargs.get("messages", [])
+            ),
+            "max_tokens": self.kwargs.get("max_tokens", 1024),
+            "extra_headers": {
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "AYRA",
+            },
+	    "extra_body": {
+                "reasoning": {
+                "exclude": True
+            }
+            },
+        }
+
+        system = self.kwargs.get("system")
+        if system:
+            system_text = self._system_text(system)
+            if system_text:
+                request["messages"].insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": system_text,
+                    },
+                )
+
+        tools = self.kwargs.get("tools", [])
+        openai_tools = []
+
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+
+            name = tool.get("name")
+            if not name:
+                continue
+
+            openai_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {}),
+                    },
+                }
+            )
+
+        if openai_tools:
+            request["tools"] = openai_tools
+            request["tool_choice"] = "auto"
+
+        return request
+
+    @property
+    def text_stream(self):
+        text_parts: list[str] = []
+        tool_calls: dict[int, dict[str, Any]] = {}
+        finish_reason = "stop"
+        usage = Usage()
+
+        for chunk in self.response:
+            if not chunk.choices:
+                continue
+
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            content = getattr(delta, "content", None)
+            if content:
+                text_parts.append(content)
+                yield content
+
+            calls = getattr(delta, "tool_calls", None)
+            if calls:
+                for call in calls:
+                    index = call.index
+
+                    entry = tool_calls.setdefault(
+                        index,
+                        {
+                            "id": "",
+                            "name": "",
+                            "arguments": "",
+                        },
+                    )
+
+                    if call.id:
+                        entry["id"] = call.id
+
+                    if call.function:
+                        if call.function.name:
+                            entry["name"] += call.function.name
+
+                        if call.function.arguments:
+                            entry["arguments"] += call.function.arguments
+
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage:
+                usage.input_tokens = (
+                    getattr(chunk_usage, "prompt_tokens", 0) or 0
+                )
+                usage.output_tokens = (
+                    getattr(chunk_usage, "completion_tokens", 0) or 0
+                )
+
+        blocks: list[Block] = []
+
+        if text_parts:
+            blocks.append(
+                Block(
+                    type="text",
+                    text="".join(text_parts),
+                )
+            )
+
+        for call in tool_calls.values():
+            try:
+                arguments = json.loads(call["arguments"] or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+
+            blocks.append(
+                Block(
+                    type="tool_use",
+                    id=call["id"],
+                    name=call["name"],
+                    input=arguments,
+                )
+            )
+
+        self.final = FinalMessage(
+            content=blocks,
+            stop_reason=(
+                "tool_use"
+                if finish_reason == "tool_calls"
+                else "end_turn"
+            ),
+            usage=usage,
+        )
+
+    def get_final_message(self) -> FinalMessage:
+        if self.final is None:
+            list(self.text_stream)
+        return self.final
+
+
+class Messages:
+    def __init__(self, client: OpenAI):
+        self.client = client
+
+    def stream(self, **kwargs):
+        return Stream(self.client, kwargs)
+
+    def create(self, **kwargs):
+        stream = Stream(self.client, kwargs)
+        request = stream._build_request()
+        request["stream"] = False
+
+        response = self.client.chat.completions.create(**request)
+
+        choice = response.choices[0]
+        content = getattr(choice.message, "content", None) or ""
+
+        usage_data = getattr(response, "usage", None)
+
+        usage = Usage(
+            input_tokens=getattr(usage_data, "prompt_tokens", 0) or 0,
+            output_tokens=getattr(usage_data, "completion_tokens", 0) or 0,
+        )
+
+        blocks = []
+
+        if content:
+            blocks.append(
+                Block(
+                    type="text",
+                    text=content,
+                )
+            )
+
+        tool_calls = getattr(choice.message, "tool_calls", None) or []
+
+        for call in tool_calls:
+            try:
+                arguments = json.loads(
+                    getattr(call.function, "arguments", "{}") or "{}"
+                )
+            except json.JSONDecodeError:
+                arguments = {}
+
+            blocks.append(
+                Block(
+                    type="tool_use",
+                    id=getattr(call, "id", ""),
+                    name=getattr(call.function, "name", ""),
+                    input=arguments,
+                )
+            )
+
+        return FinalMessage(
+            content=blocks,
+            stop_reason=(
+                "tool_use"
+                if tool_calls
+                else "end_turn"
+            ),
+            usage=usage,
+        )
+
+class OpenRouterClient:
+    def __init__(self, api_key: str):
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        self.messages = Messages(client)

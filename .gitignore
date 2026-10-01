@@ -1,0 +1,15 @@
+venv/
+wsl-venv/
+ayra-venv/
+.venv/
+
+__pycache__/
+*.pyc
+
+.env
+*.wav
+*.mp3
+*.zip
+
+piper-sample-generator/
+

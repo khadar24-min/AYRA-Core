@@ -1,0 +1,184 @@
+# Core LLM
+anthropic>=0.40.0
+httpx>=0.27           # already pulled by anthropic, but we use it directly in src/http_util.py (shared by sports/weather/games/tmdb)
+
+# Wake-word detection (local, MIT licensed)
+openwakeword>=0.6.0
+
+# Speech-to-text (CTranslate2-backed Whisper, CPU-friendly)
+faster-whisper>=1.0.0
+
+# Text-to-speech
+edge-tts>=6.1.0       # primary: Microsoft online voices
+pyttsx3>=2.90         # fallback: offline Windows SAPI
+
+# Audio I/O
+sounddevice>=0.4.6
+numpy>=1.24
+miniaudio>=1.59     # MP3 decoder (edge-tts returns mp3) — pure pip, no ffmpeg needed
+pyaec>=1.0.1        # M88 Phase 2 — SpeexDSP acoustic echo canceller (prebuilt native DLL, Windows py3.12); cancels Jarvis's own playback from the mic so hands-free barge-in can VAD on the user. De-risked via scripts/aec_spike.py (19 dB pure-AEC ERLE, user preserved). WebRTC APM sdist would not build on Windows.
+
+# System tray icon
+pystray>=0.19.5
+Pillow>=10.0          # required by pystray for icon rendering
+
+# Console window (dark-themed Tk wrapper)
+customtkinter>=5.2.0
+
+# Config
+python-dotenv>=1.0.0
+
+# MCP — Model Context Protocol client + Plex MCP server (M21)
+# We spawn plex-mcp-server as a stdio subprocess and talk to it via the mcp
+# SDK's ClientSession. plex-mcp-server pulls in plexapi as its transitive dep.
+mcp>=1.0.0
+plex-mcp-server>=1.1.7
+
+# PC diagnostics + system control (M23) — local Windows telemetry and
+# allowlisted actions. psutil for CPU/RAM/disk/processes/services. pycaw for
+# the Windows Audio Endpoint (system master volume). pywin32 NOT required —
+# we shell out to PowerShell Get-WinEvent for event log queries.
+psutil>=5.9
+pycaw>=20240210
+
+# Remote Plex laptop diagnostics over SSH (M24). paramiko is pure-Python
+# (depends on cryptography for asymmetric crypto). Used for log triage and
+# remote system-health queries against the Plex laptop using ed25519 key auth.
+paramiko>=3.4
+
+# News headlines (M47) — get_news tool. feedparser is small, pure-Python
+# (no transitive deps), and robust across RSS 2.0 / Atom / RDF + malformed
+# real-world feeds; it never raises (sets a bozo flag), matching Jarvis's
+# fail-soft contract. Feed bytes are fetched via the shared src/http_util.py
+# (first new consumer of the M43 extraction); feedparser only parses them.
+feedparser>=6.0
+
+# Remote console (M48) — LAN-only phone/web console. Pure-Python, no heavy
+# transitive deps; runs its own asyncio loop in a daemon thread (the app is
+# threaded). stdlib has no WS server, so a dep is genuinely required (the
+# M47 dep-asymmetry principle); `websockets` is the minimal robust choice
+# over aiohttp/FastAPI, and serves the one-page PWA from its HTTP handler.
+websockets>=13.0
+
+# Camera vision (M29) — grab a still frame from the USB webcam for the
+# camera_snapshot tool, which hands the image to Claude (multimodal) to
+# describe. headless = no GUI/Qt bits we don't need. cv2.VideoCapture also
+# does RTSP, so this is forward-compatible if IP cameras get added later.
+opencv-python-headless>=4.8
+
+# Security mode (M34) — local person detection via YOLOv8n. Pulls in torch
+# CPU (~200 MB) + non-headless opencv-python as transitive deps. YOLO model
+# (yolov8n.pt, ~6 MB) auto-downloads to ~/.cache/torch/hub on first inference.
+# CPU inference at ~150-300ms per frame on a Ryzen 5 3400G — fits the 0.5Hz
+# polling rate at <10% one-core utilization. MIT licensed.
+ultralytics>=8.4
+
+# Outlook calendar awareness (M62.1) — read-only, via published iCal URL.
+# recurring-ical-events does ICS parsing + RRULE recurrence expansion (the
+# client-side analog of Graph's /calendarView). Pulls icalendar + dateutil +
+# tzdata as transitive deps. Zero auth — Outlook.com's calendar-publishing
+# feature gives a secret .ics URL; Jarvis fetches it with httpx.
+#
+# (M62 originally also shipped a Microsoft Graph backend via `msal`; it was
+# removed in the 2026-05-29 QoL pass — unreachable on this machine because
+# the user's Entra tenant is suspended. Git history has it if ever needed.)
+recurring-ical-events>=3.0
+
+# Acoustic awareness (M58) — proactive ambient-sound detection. PANNs Cnn14
+# audio tagger (AudioSet 527 classes) for doorbell / smoke alarm / glass /
+# knock / etc. Pulls librosa + numba + soundfile as transitive deps. AST via
+# transformers was the first pick but measured ~3.5s/inference on this CPU
+# (Ryzen 5 3400G) — too slow for a real-time alert loop; Cnn14 measured ~0.20s
+# steady-state. Bundled wget downloader is broken on Windows, so the labels
+# CSV + checkpoint are pre-placed by httpx in src/sound_detector.py's
+# _ensure_files(). Audio never leaves the box; opt-in feature, default off.
+panns_inference>=0.1
+
+# Knowledge-base semantic search (M46) — local sentence embeddings for the
+# knowledge_search hybrid retrieval (keyword FTS5 + vector, fused by RRF).
+# torch (the heavy part) is ALREADY pulled by ultralytics above, so this is
+# an incremental add, not a fresh ~200 MB dep. Model all-MiniLM-L6-v2
+# (384-dim, ~80 MB) auto-downloads to the HF cache on first reindex. LOCAL by
+# requirement — the private corpus must never leave the machine. If this
+# package is absent, knowledge_search degrades cleanly to M45 keyword-only.
+sentence-transformers>=3.0
+
+# Speaker identification (M69) — per-turn "who is speaking" via Resemblyzer
+# d-vectors (256-dim, L2-normalized → cosine similarity). Powers an opt-in
+# "respond only to enrolled voices" gate (filters background media from the
+# open omni-mic) + multi-user language hints. Deps are NEARLY FREE here: torch
+# is already pulled by ultralytics, and librosa/numba by panns_inference above
+# — only resemblyzer + webrtcvad (its VAD trimmer) are new. Steady-state embed
+# ~30ms; the ~5-15s first-call JIT is paid once by speaker_id.warm(). Measured
+# de-risk (scripts/speaker_id_probe.py): you-vs-you ~0.895 vs you-vs-media
+# ~0.566 on this mic → clean separation. LOCAL — audio never leaves the box;
+# absent package degrades cleanly (speaker_id.AVAILABLE False, gate disabled).
+# NOTE: resemblyzer lists the legacy `typing` backport as a dep — pip installs
+# it, but it SHADOWS stdlib typing on 3.12, so after `pip install -r` run
+# `pip uninstall -y typing`. See the M69 entry.
+resemblyzer>=0.1.4
+
+# Discord bot bridge (2026-06-02) — a private channel as a two-way Jarvis
+# client. Gateway bot (outbound, no inbound port needed). Needs a bot token +
+# the Message Content privileged intent enabled in the Developer Portal.
+discord.py>=2.7.1
+
+
+# Game-length tool (get_game_length) — "how long to beat X?" via How Long To
+# Beat. No API key (HLTB has no public API; this package scrapes their search
+# endpoint, so it can break when the site changes — lazy-imported behind a
+# sentinel in src/game_length.py so a broken install degrades gracefully).
+# Pulls aiohttp + beautifulsoup4 + fake_useragent transitively.
+
+# Windows audio endpoint COM bindings — imported DIRECTLY by
+# src/system_control.py (`import comtypes`) for the master-volume path.
+# pycaw already pulls it transitively, but a direct import deserves a direct
+# declaration: if pycaw ever drops or renames the dep, volume control breaks
+# at runtime rather than at install time. Pure Python, no build step.
+comtypes>=1.2
+
+# ── The rest of the direct-but-transitive imports ───────────────────────────
+# Same reasoning as comtypes above, applied to its peers. A 2026-08-22 audit
+# found comtypes was one of FOUR modules imported directly while declared only
+# transitively — the earlier pass fixed the one it found and did not check the
+# others, which is the failure mode this project's own rule warns about ("fix
+# the failure mode, not the instance"). All three below are satisfied today by
+# a transitive edge; if that edge ever moves, the feature breaks at RUNTIME
+# instead of at install time, on a machine that has already been rebuilt.
+#
+# Each is imported lazily, inside the function that needs it, so an absent
+# package degrades rather than crashing at startup — but "degrades" here means
+# silently losing a capability, which is exactly what a declaration prevents.
+
+# torch — imported directly by src/security.py and src/sound_detector.py to
+# pin inference to CPU and cap thread counts (the armed-mode CPU budget, M99).
+# Already pulled by ultralytics; declared here because the two call sites
+# depend on torch's own API, not on ultralytics'.
+torch>=2.0
+
+# icalendar — imported directly by src/outlook_calendar.py to parse the
+# published .ics body. Already pulled by recurring-ical-events above.
+icalendar>=5.0
+
+# av (PyAV) — imported directly by src/speech_to_text.py and
+# src/remote_console.py to decode the browser's WebM/Opus push-to-talk audio
+# before it reaches Whisper. Already pulled by faster-whisper. Without it the
+# phone PWA's voice path fails while its text path keeps working, which is
+# precisely the kind of half-broken remote client nobody reports.
+av>=11.0
+
+# ── OPTIONAL: enrolled-face authentication (M39) ────────────────────────────
+# DELIBERATELY COMMENTED OUT, not forgotten. `face_recognition` needs dlib,
+# which compiles C++ and therefore requires MSVC Build Tools on Windows —
+# putting it above would make `pip install -r requirements.txt` FAIL on a
+# machine without a C++ toolchain, for a feature that is optional.
+#
+# It is imported lazily (src/face_auth.py) and every call site degrades to
+# "face auth disabled", so the absence is silent. That is the risk this note
+# exists to close: face auth is ONE OF THE TWO ways to clear a security
+# challenge (the other is the spoken passphrase), so a rebuilt machine
+# quietly loses an authentication factor with nothing in the logs saying so.
+# `python scripts/doctor.py` reports whether it is present.
+#
+# To enable: install MSVC Build Tools, then uncomment:
+# face_recognition>=1.3
