@@ -223,15 +223,16 @@ class JarvisTray:
             ))
         if menu_items:
             menu_items.append(pystray.Menu.SEPARATOR)
+        menu_items.append(pystray.MenuItem("About AYRA", self._handle_about))
         if on_restart is not None:
             # Sibling of Quit — same teardown path, then a detached relaunch
             # of jarvis.pyw after the current process finishes sealing the
             # session. See JarvisUI._handle_restart for the flag-and-defer
             # mechanics; the relaunch itself fires from main() after worker
             # join, so the new instance doesn't fight the old one for the mic.
-            menu_items.append(pystray.MenuItem("Restart Jarvis", self._handle_restart))
+            menu_items.append(pystray.MenuItem("Restart AYRA", self._handle_restart))
         if on_restart_elevated is not None:
-            # M41: "Restart Jarvis (Administrator)" — only shown when the
+            # M41: "Restart AYRA (Administrator)" — only shown when the
             # current process is NOT already elevated. No point offering an
             # upgrade path when there's nothing to upgrade to; hiding the
             # item also signals to the user, at-a-glance, that the current
@@ -242,16 +243,29 @@ class JarvisTray:
             from src.autostart import is_admin  # noqa: PLC0415 — defer to break import cycle
             if not is_admin():
                 menu_items.append(pystray.MenuItem(
-                    "Restart Jarvis (Administrator)", self._handle_restart_elevated,
+                    "Restart AYRA (Administrator)", self._handle_restart_elevated,
                 ))
         menu_items.append(pystray.MenuItem("Quit", self._handle_quit))
 
         self.icon = pystray.Icon(
-            "jarvis",
+            "ayra",
             _make_circle(State.IDLE.value),
-            "Jarvis (idle)",
+            "AYRA (idle)",
             menu=pystray.Menu(*menu_items),
         )
+
+    def _handle_about(self) -> None:
+        """Display AYRA version and creator info."""
+        try:
+            import tkinter.messagebox as mb  # noqa: PLC0415
+            mb.showinfo(
+                "About AYRA",
+                "AYRA — Autonomous Intelligent Assistant\n"
+                "Version 2.0\n\n"
+                "Created by Khadar (Nannu)",
+            )
+        except Exception:
+            pass
 
     def _handle_quit(self) -> None:
         self.shutdown.set()
@@ -349,7 +363,7 @@ class JarvisTray:
         while not self.shutdown.is_set():
             try:
                 state = self._state
-                self.icon.title = f"Jarvis ({state.name.lower()})"
+                self.icon.title = f"AYRA ({state.name.lower()})"
 
                 if state == State.SPEAKING:
                     # Sine-wave pulse, brightness 0.4..1.0 at 2 Hz, 8 fps.

@@ -80,7 +80,7 @@ def main() -> None:
     from src.autostart import is_admin as _is_admin  # noqa: PLC0415
     print(f"[main] running elevated: {_is_admin()}")
 
-    print("Jarvis ready. Tray icon active — left-click to show window. Say 'Hey Jarvis' to begin.\n")
+    print("AYRA ready. Tray icon active — left-click to show window. Say 'Hey Ayra' to begin.\n")
 
     reset_event = threading.Event()
 
@@ -89,7 +89,7 @@ def main() -> None:
         # in listen_loop after the next wake word + STT, so the click applies
         # to the very next question (not the one after).
         reset_event.set()
-        print("[tray] reset queued — applies to your next 'Hey Jarvis'")
+        print("[tray] reset queued — applies to your next 'Hey Ayra'")
 
     # Memory dir = %LOCALAPPDATA%\Jarvis (parent of sessions/ and summaries.jsonl)
     # — exposed on the tray so the user can browse past transcripts in one click.

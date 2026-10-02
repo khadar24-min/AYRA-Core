@@ -21,6 +21,7 @@ The integration test exercises the FOUR exit-code dispatches:
 from __future__ import annotations
 
 import importlib.util
+import importlib.machinery
 import sys
 import time
 from pathlib import Path
@@ -31,7 +32,12 @@ _HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_HERE))
 
 _spec = importlib.util.spec_from_file_location(
-    "jarvis_watchdog", _HERE / "jarvis_watchdog.pyw"
+    "jarvis_watchdog",
+    _HERE / "jarvis_watchdog.pyw",
+    loader=importlib.machinery.SourceFileLoader(
+        "jarvis_watchdog",
+        str(_HERE / "jarvis_watchdog.pyw"),
+    ),
 )
 assert _spec is not None and _spec.loader is not None
 jarvis_watchdog = importlib.util.module_from_spec(_spec)

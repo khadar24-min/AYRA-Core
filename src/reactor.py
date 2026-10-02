@@ -75,17 +75,15 @@ def _render(size: int, rgb: tuple[int, int, int], phase: float):
     d = ImageDraw.Draw(img)
     c = W / 2
     R = W / 2
-    hot = (125, 243, 255)
-    ring = (36, 74, 94)
+    hot = (165, 243, 252)
+    ring = (30, 41, 59)
     t = phase * 360
 
-    # Glow: stacked translucent discs with a quadratic falloff. This is the
-    # part the canvas simply cannot do. Kept tight and bright rather than wide
-    # and faint, because _KEY_CUT will clip the faint tail off anyway.
+    # 1. AYRA Volumetric Neural Glow: smooth radial gradient with quadratic falloff
     for i in range(24, 0, -1):
         f = i / 24
-        r = R * (0.44 + 0.24 * f)
-        a = int(40 * (1 - f) ** 1.8)
+        r = R * (0.42 + 0.28 * f)
+        a = int(42 * (1 - f) ** 1.8)
         if a > 0:
             d.ellipse([c - r, c - r, c + r, c + r], fill=(*rgb, a))
 
@@ -96,43 +94,33 @@ def _render(size: int, rgb: tuple[int, int, int], phase: float):
             d.arc([c - radius, c - radius, c + radius, c + radius],
                   a0, a0 + span, fill=(*col, 255), width=max(1, int(width * S)))
 
-    # Three counter-rotating rings.
-    #
-    # The rotation amounts are not free. A ring of n arcs is symmetric every
-    # 360/n degrees, so it maps onto ITSELF partway through the cycle unless
-    # the numbers are chosen against it. Writing q for how many symmetry
-    # periods a ring turns per cycle, frame i repeats frame 0 as soon as
-    # i*q is a multiple of _FRAMES — so the cycle only yields _FRAMES distinct
-    # frames when gcd(q, _FRAMES) == 1.
-    #
-    # The first draft used q = 2, 6, 18 against _FRAMES = 12 and got SIX
-    # distinct frames, two of them rendered twelve times: half the warm cost
-    # and half the memory bought nothing, and the animation ran at double the
-    # intended speed. q = 1, -5, 7 are all coprime with 12, so every frame is
-    # distinct and the loop still closes seamlessly. Pinned by reactor_test.
-    arcs(R * 0.94, 1.5, ring, 2, 104, t * 0.5)                        # q = +1
-    arcs(R * 0.84, 2.0, _lerp(ring, rgb, 0.55), 3, 34, -t * (5 / 3))  # q = -5
-    arcs(R * 0.72, 1.2, _lerp(ring, rgb, 0.30), 6, 8, t * (7 / 6))    # q = +7
+    # 2. AYRA Harmonic Orbital Resonators (q = 1, -5, 7 ensuring 12 coprime frames)
+    # Outer harmonic ring: 2 sweeping orbital energy filaments
+    arcs(R * 0.92, 1.8, _lerp(ring, rgb, 0.45), 2, 110, t * 0.5)                       # q = +1
+    # Middle orbital ring: 3 sleek segmented arcs
+    arcs(R * 0.78, 2.2, _lerp(ring, rgb, 0.75), 3, 36, -t * (5 / 3))                  # q = -5
+    # Inner resonant ring: 6 delicate orbital guides
+    arcs(R * 0.65, 1.4, _lerp(ring, rgb, 0.40), 6, 12, t * (7 / 6))                   # q = +7
 
-    # Graduated tick ring — static, reads as instrumentation. 36 ticks, not 60:
-    # at 190 px, 60 ticks land ~6 px apart and read as noise rather than a scale.
-    rt0, rt1 = R * 0.62, R * 0.67
-    for k in range(36):
-        ang = math.radians(k * 10)
-        long = (k % 3 == 0)
-        r0 = rt0 - (R * 0.03 if long else 0)
-        col = _lerp(ring, rgb, 0.5) if long else ring
-        d.line([c + r0 * math.cos(ang), c + r0 * math.sin(ang),
-                c + rt1 * math.cos(ang), c + rt1 * math.sin(ang)],
-               fill=(*col, 255), width=max(1, int((1.6 if long else 1.0) * S)))
+    # 3. AYRA Precision Celestial Alignment Marks (4 cardinal nodes + 8 orbital harmonic pips)
+    for k in range(12):
+        ang = math.radians(k * 30)
+        is_cardinal = (k % 3 == 0)
+        r_node = R * 0.85
+        node_size = (3.5 if is_cardinal else 1.8) * S
+        col = hot if is_cardinal else _lerp(ring, rgb, 0.6)
+        nx = c + r_node * math.cos(ang)
+        ny = c + r_node * math.sin(ang)
+        d.ellipse([nx - node_size, ny - node_size, nx + node_size, ny + node_size],
+                  fill=(*col, 255))
 
-    # Core: radial ramp out from a near-white centre.
-    r_core = R * 0.30
+    # 4. Harmonic Inner Core: smooth radial energy transition into focal singularity
+    r_core = R * 0.32
     for i in range(int(r_core), 0, -1):
         f = i / r_core
         d.ellipse([c - i, c - i, c + i, c + i],
                   fill=(*_lerp(hot, rgb, f ** 0.6), 255))
-    r_hot = R * 0.11
+    r_hot = R * 0.12
     d.ellipse([c - r_hot, c - r_hot, c + r_hot, c + r_hot], fill=(*hot, 255))
 
     out = img.resize((size, size), Image.LANCZOS)

@@ -47,30 +47,29 @@ from src.tray import State
 
 
 class JarvisConsole:
-    # Palette — Stark HUD: near-black + electric arc-reactor cyan, with a
-    # sparing Iron-Man gold. The console-local _STATE_COLOR map keeps the
-    # orb's per-state palette out of tray.py's State enum.
-    BG = "#0a0e14"          # near-black, faint blue
-    PANEL_BG = "#10161f"    # raised panels (transcript, input, chip)
-    PANEL_LINE = "#1d2b3a"  # dim HUD rings / tick marks
-    BORDER = "#21465a"      # faintly glowing panel edge
-    ACCENT = "#22d3ee"      # electric arc-reactor cyan — primary
-    ACCENT_HOT = "#7df3ff"  # near-white-hot cyan — glow cores, peaks
-    GOLD = "#f5b942"        # Iron Man gold — sparing secondary
-    HEADER_FG = "#22d3ee"
-    USER_FG = "#cdd9e5"
-    JARVIS_FG = "#5ee0f0"
-    DIM_FG = "#5b6b7f"
+    # Palette — AYRA Interface: Deep obsidian, electric celestial cyan, and luminous violet.
+    # Refined, modern, professional AI assistant styling.
+    BG = "#080b12"          # deep obsidian midnight
+    PANEL_BG = "#0f1623"    # sleek dark graphite panel
+    PANEL_LINE = "#1e293b"  # subtle harmonic guide line
+    BORDER = "#253347"      # soft luminous panel edge
+    ACCENT = "#38bdf8"      # electric celestial cyan — primary
+    ACCENT_HOT = "#a5f3fc"  # radiant cyan-white — glow cores, peaks
+    GOLD = "#a855f7"        # neural violet — thinking/reasoning state
+    HEADER_FG = "#38bdf8"
+    USER_FG = "#e2e8f0"
+    JARVIS_FG = "#38bdf8"   # AYRA message text color
+    DIM_FG = "#64748b"
 
-    ORB_SIZE = 208  # arc-reactor canvas (square; the orb is centred in it)
+    ORB_SIZE = 208  # AYRA Neural Core canvas (square; the orb is centred in it)
 
     # Per-state orb colour — console-local (NOT State.value, which drives the
-    # tray icon). THINKING borrows Iron Man's gold; the rest are reactor cyan.
+    # tray icon).
     _STATE_COLOR = {
-        State.IDLE: "#3f5468",       # calm dim cyan-slate — reactor at rest
-        State.LISTENING: "#22d3ee",  # electric cyan
-        State.THINKING: "#f5b942",   # gold — "working"
-        State.SPEAKING: "#34e6d0",   # bright teal-cyan
+        State.IDLE: "#475569",       # calm resting slate
+        State.LISTENING: "#38bdf8",  # vivid celestial cyan — attentive
+        State.THINKING: "#a855f7",   # radiant neural violet — synthesis
+        State.SPEAKING: "#2dd4bf",   # active teal-cyan resonance
     }
 
     def __init__(self) -> None:
@@ -78,7 +77,7 @@ class JarvisConsole:
         ctk.set_default_color_theme("blue")
 
         self.root = ctk.CTk()
-        self.root.title("Jarvis")
+        self.root.title("AYRA")
         self.root.geometry("600x820")
         self.root.configure(fg_color=self.BG)
         self.root.minsize(520, 680)
@@ -115,21 +114,21 @@ class JarvisConsole:
         # --- Header ---
         header = ctk.CTkLabel(
             self.root,
-            text="J . A . R . V . I . S .",
-            font=("Consolas", 28, "bold"),
+            text="A · Y · R · A",
+            font=("Segoe UI", 26, "bold"),
             text_color=self.HEADER_FG,
         )
-        header.pack(pady=(24, 3))
+        header.pack(pady=(22, 2))
 
         subtitle = ctk.CTkLabel(
             self.root,
-            text="at your service, sir",
-            font=("Consolas", 10),
+            text="Autonomous Intelligent System  ·  Created by Khadar (Nannu)",
+            font=("Segoe UI", 11),
             text_color=self.DIM_FG,
         )
         subtitle.pack(pady=(0, 12))
 
-        # Thin HUD divider under the header.
+        # Thin divider under the header.
         divider = ctk.CTkFrame(
             self.root, height=2, fg_color=self.BORDER, corner_radius=0,
         )
@@ -344,8 +343,8 @@ class JarvisConsole:
 
         self._input = ctk.CTkEntry(
             self._entry_row,
-            placeholder_text="type to Jarvis…  (Enter to send)",
-            font=("Consolas", 14),
+            placeholder_text="Message AYRA…  (Enter to send)",
+            font=("Segoe UI", 13),
             fg_color=self.PANEL_BG,
             text_color=self.USER_FG,
             border_width=1,
@@ -364,12 +363,12 @@ class JarvisConsole:
             border_width=1, border_color=self.BORDER,
         )
         transcript_frame.pack(padx=20, pady=(0, 18), fill="both", expand=True)
-        # HUD corner brackets on the four corners (placed, so they track resize).
+        # Corner brackets on the four corners (placed, so they track resize).
         self._add_corner_brackets(transcript_frame)
 
         self._transcript = ctk.CTkTextbox(
             transcript_frame,
-            font=("Consolas", 15),
+            font=("Segoe UI", 14),
             fg_color=self.PANEL_BG,
             text_color=self.USER_FG,
             wrap="word",
@@ -389,12 +388,12 @@ class JarvisConsole:
         # coded (you = soft white, jarvis = cyan) so the eye can find each turn.
         tb = self._transcript._textbox
         tb.tag_configure("dim", foreground=self.DIM_FG)
-        tb.tag_configure("time", foreground=self.DIM_FG, font=("Consolas", 11),
+        tb.tag_configure("time", foreground=self.DIM_FG, font=("Segoe UI", 10),
                          spacing1=12)
-        tb.tag_configure("you_label", foreground="#e6edf5",
-                         font=("Consolas", 12, "bold"))
+        tb.tag_configure("you_label", foreground="#e2e8f0",
+                         font=("Segoe UI", 11, "bold"))
         tb.tag_configure("jarvis_label", foreground=self.ACCENT,
-                         font=("Consolas", 12, "bold"))
+                         font=("Segoe UI", 11, "bold"))
         tb.tag_configure("user", foreground=self.USER_FG,
                          lmargin1=18, lmargin2=18, spacing1=3, spacing3=6)
         tb.tag_configure("jarvis", foreground=self.JARVIS_FG,
@@ -408,7 +407,7 @@ class JarvisConsole:
         self._transcript.configure(state="disabled")
 
         # Initial empty-state hint
-        self._append_raw("system", "ready. say 'hey jarvis' to begin.\n")
+        self._append_raw("system", "AYRA initialized. Ready for voice or text interaction.\n")
 
         # Window-close = hide (not quit). Quit comes from the tray menu.
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
@@ -468,6 +467,9 @@ class JarvisConsole:
     def add_jarvis_text(self, text: str) -> None:
         if not self._destroyed:
             self.root.after(0, self._append_line, "jarvis", text, "")
+
+    def add_ayra_text(self, text: str) -> None:
+        self.add_jarvis_text(text)
 
     def add_system_text(self, text: str) -> None:
         if not self._destroyed:
@@ -626,22 +628,22 @@ class JarvisConsole:
         return (f"#{c(ra + (rb - ra) * t):02x}{c(ga + (gb - ga) * t):02x}"
                 f"{c(ba + (bb - ba) * t):02x}")
 
-    # ----- The arc-reactor orb -----
+    # ----- The AYRA Neural Core orb -----
 
     def _build_orb(self) -> None:
         """Create the orb's canvas items once. Layer order (back → front):
-        bezel ring + 12 tick marks, the 4-disc radial glow halo (large →
-        small), a mid ring, the core, then the two rotating arcs on top.
-        _draw_orb mutates only fills / coords each frame."""
+        outer harmonic ring + precision orbital nodes, radial glow halo (large →
+        small), a mid guide ring, the core, then the two rotating harmonic arcs.
+        _draw_orb mutates fills / coords each frame."""
         cv = self._orb
         s = self.ORB_SIZE
         cx = cy = s // 2
         self._orb_cx, self._orb_cy = cx, cy
         r_out = s // 2 - 10
-        r_mid = int(r_out * 0.80)
+        r_mid = int(r_out * 0.78)
         line = self.PANEL_LINE
 
-        # The pre-rendered reactor (M98) — created first so everything else
+        # The pre-rendered AYRA Core (M98) — created first so everything else
         # layers above it, empty until its background warm completes.
         self._orb_img = cv.create_image(cx, cy)
         self._orb_photos: dict[tuple, object] = {}
@@ -650,18 +652,21 @@ class JarvisConsole:
 
         # --- vector fallback: hidden the moment images arrive ---
         self._orb_vec: list[int] = []
-        # Bezel ring.
+        # Outer harmonic orbit ring.
         self._orb_vec.append(
             cv.create_oval(cx - r_out, cy - r_out, cx + r_out, cy + r_out,
-                           outline=line, width=2))
-        # 12 clock-style tick marks just inside the bezel.
+                           outline=line, width=1.5))
+        # 12 precision celestial nodes (4 cardinal + 8 orbital pips).
         for i in range(12):
             a = math.radians(i * 30)
-            r1, r2 = r_out - 3, r_out - 11
-            self._orb_vec.append(cv.create_line(
-                cx + r1 * math.cos(a), cy + r1 * math.sin(a),
-                cx + r2 * math.cos(a), cy + r2 * math.sin(a),
-                fill=line, width=2,
+            r_node = r_out - 6
+            is_cardinal = (i % 3 == 0)
+            nr = 2.5 if is_cardinal else 1.2
+            nx = cx + r_node * math.cos(a)
+            ny = cy + r_node * math.sin(a)
+            self._orb_vec.append(cv.create_oval(
+                nx - nr, ny - nr, nx + nr, ny + nr,
+                fill=self.ACCENT if is_cardinal else line, outline="",
             ))
         # Radial glow halo — 4 filled discs, large → small. _draw_orb sets
         # their fills dim → bright each frame to fake a soft radial gradient.
@@ -673,18 +678,18 @@ class JarvisConsole:
                                fill=self.BG, outline="")
             )
         self._orb_vec.extend(self._orb_glow)
-        # Mid ring — drawn after the halo so it stays visible on top of it.
+        # Mid guide ring — drawn after the halo so it stays visible on top of it.
         self._orb_vec.append(
             cv.create_oval(cx - r_mid, cy - r_mid, cx + r_mid, cy + r_mid,
                            outline=line, width=1))
-        # Two counter-rotating arcs (on top).
+        # Two counter-rotating harmonic resonance arcs (on top).
         self._orb_arc_out = cv.create_arc(
             cx - r_out, cy - r_out, cx + r_out, cy + r_out,
-            start=0, extent=90, style="arc", outline=self.ACCENT, width=3,
+            start=0, extent=100, style="arc", outline=self.ACCENT, width=2.5,
         )
         self._orb_arc_mid = cv.create_arc(
             cx - r_mid, cy - r_mid, cx + r_mid, cy + r_mid,
-            start=180, extent=60, style="arc", outline=self.ACCENT, width=2,
+            start=180, extent=65, style="arc", outline=self.ACCENT, width=2,
         )
         self._orb_vec.extend((self._orb_arc_out, self._orb_arc_mid))
 
@@ -694,7 +699,7 @@ class JarvisConsole:
         self._orb_core_r = max(9, int(self.ORB_SIZE * 0.055))
         r = self._orb_core_r
         self._orb_core = cv.create_oval(cx - r, cy - r, cx + r, cy + r,
-                                        fill=self.ACCENT, outline="")
+                                         fill=self.ACCENT, outline="")
         self._orb_amp_ring = cv.create_oval(cx, cy, cx, cy, outline="", width=2)
 
     def _orb_frame(self, color: str, t: float) -> bool:
@@ -924,6 +929,8 @@ class JarvisConsole:
         for enabled integrations, hollow (○) for not. Single dim line, no
         wrapping — fits within a 520px window comfortably."""
         parts = [
+            "AYRA Core",
+            "by Khadar (Nannu)",
             self._status_model,
             f"up {self._format_uptime()}",
             f"{self._status_tokens:,} tok",
@@ -1136,7 +1143,7 @@ class JarvisConsole:
                 tb.insert("end", label + "\n", "you_label")
                 tb.insert("end", text + "\n", "user")
             else:
-                tb.insert("end", "JARVIS\n", "jarvis_label")
+                tb.insert("end", "AYRA\n", "jarvis_label")
                 tb.insert("end", text + "\n", "jarvis")
             tb.see("end")
             self._transcript.configure(state="disabled")
@@ -1198,7 +1205,7 @@ class JarvisConsole:
         (listen_loop, text_input_loop) keep running independently."""
         path = filedialog.askopenfilename(
             parent=self.root,
-            title="Attach a file for Jarvis",
+            title="Attach a file for AYRA",
             filetypes=[
                 ("Documents", "*.pdf"),
                 ("Images", "*.png *.jpg *.jpeg *.gif *.webp"),

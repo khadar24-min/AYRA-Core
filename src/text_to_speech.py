@@ -34,10 +34,10 @@ import pyttsx3
 import sounddevice as sd
 
 VOICE_BY_LANG = {
-    "en": "en-GB-RyanNeural",   # calm British male — Paul Bettany-adjacent
-    "es": "es-MX-JorgeNeural",  # formal Mexican male — butler register
+    "en": "en-US-AriaNeural",   # natural, expressive female English voice
+    "es": "es-MX-DaliaNeural",  # natural female Spanish voice
 }
-DEFAULT_VOICE = "en-GB-RyanNeural"
+DEFAULT_VOICE = "en-US-AriaNeural"
 
 # Sentence boundary: terminal punctuation followed by whitespace/EOS, or any newline.
 # Note: false positives on abbreviations ("Mr. Smith") are acceptable — they just

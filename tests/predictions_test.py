@@ -77,8 +77,12 @@ with tempfile.TemporaryDirectory() as tmp:
         check("save/load round-trip", back["last_mined_at"] == "2026-06-10T00:00:00"
               and back["predictions"][0]["id"] == "x")
         (Path(tmp) / "Jarvis" / "predictions.json").write_text("{not json", encoding="utf-8")
+        import io
+        from contextlib import redirect_stderr
+        with redirect_stderr(io.StringIO()):
+            corrupt_loaded = pr._load()
         check("corrupt store -> default shape, no crash",
-              pr._load()["predictions"] == [])
+              corrupt_loaded["predictions"] == [])
 
 
 # --- Test 2: stable id is stable + day-granular ---------------------------

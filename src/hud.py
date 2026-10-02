@@ -40,18 +40,18 @@ from src.tray import State
 # pixel exactly this colour is punched fully transparent + click-through.
 _KEY = "#010101"
 
-# Per-state orb colour (matches the M57 console palette).
+# Per-state orb colour (matches the AYRA console palette).
 _STATE_COLOR = {
-    State.IDLE: "#3f5468",       # calm dim cyan-slate — reactor at rest
-    State.LISTENING: "#22d3ee",  # electric cyan
-    State.THINKING: "#f5b942",   # gold — working
-    State.SPEAKING: "#34e6d0",   # bright teal-cyan
+    State.IDLE: "#475569",       # calm resting slate
+    State.LISTENING: "#38bdf8",  # vivid celestial cyan — attentive
+    State.THINKING: "#a855f7",   # radiant neural violet — synthesis
+    State.SPEAKING: "#2dd4bf",   # active teal-cyan resonance
 }
-_ACCENT_HOT = "#7df3ff"   # near-white-hot cyan — glow cores, peaks
-_RING = "#244a5e"         # dim HUD ring / ticks
-_TEXT = "#7fe9f5"         # cyan readout text
+_ACCENT_HOT = "#a5f3fc"   # radiant cyan-white — glow cores, peaks
+_RING = "#1e293b"         # subtle orbital ring / guide
+_TEXT = "#38bdf8"         # celestial cyan readout text
 _ARMED = "#ff5a5a"        # security-armed red
-_RESEARCH = "#7fd4ff"     # background-research cyan
+_RESEARCH = "#818cf8"     # neural indigo
 
 
 def is_enabled() -> bool:
@@ -230,14 +230,17 @@ class JarvisHUD:
         # --- vector fallback (hidden once images arrive) ---
         self._vec: list[int] = []
         self._vec.append(cv.create_oval(cx - r_out, ocy - r_out, cx + r_out, ocy + r_out,
-                                        outline=_RING, width=2))
+                                        outline=_RING, width=1.5))
         for i in range(12):
             a = math.radians(i * 30)
-            r1, r2 = r_out - 3, r_out - 10
+            r_node = r_out - 6
+            is_cardinal = (i % 3 == 0)
+            nr = 2.0 if is_cardinal else 1.0
+            nx = cx + r_node * math.cos(a)
+            ny = ocy + r_node * math.sin(a)
             self._vec.append(
-                cv.create_line(cx + r1 * math.cos(a), ocy + r1 * math.sin(a),
-                               cx + r2 * math.cos(a), ocy + r2 * math.sin(a),
-                               fill=_RING, width=2))
+                cv.create_oval(nx - nr, ny - nr, nx + nr, ny + nr,
+                               fill=_TEXT if is_cardinal else _RING, outline=""))
         # Radial glow halo — 4 discs, large → small (filled per-frame).
         self._glow: list[int] = []
         for rr in (int(r_out * 0.62), int(r_out * 0.46),
@@ -248,11 +251,11 @@ class JarvisHUD:
         self._vec.append(cv.create_oval(cx - r_mid, ocy - r_mid, cx + r_mid, ocy + r_mid,
                                         outline=_RING, width=1))
         self._arc_out = cv.create_arc(cx - r_out, ocy - r_out, cx + r_out, ocy + r_out,
-                                      start=0, extent=90, style="arc",
-                                      outline="#22d3ee", width=3)
+                                      start=0, extent=100, style="arc",
+                                      outline=_TEXT, width=2.5)
         self._arc_mid = cv.create_arc(cx - r_mid, ocy - r_mid, cx + r_mid, ocy + r_mid,
-                                      start=180, extent=60, style="arc",
-                                      outline="#22d3ee", width=2)
+                                      start=180, extent=65, style="arc",
+                                      outline=_TEXT, width=2)
         self._vec.extend((self._arc_out, self._arc_mid))
 
         # --- live overlays (drawn in BOTH modes) ---
@@ -262,7 +265,7 @@ class JarvisHUD:
         self._core_r = max(8, int(self.ORB * 0.055))
         r = self._core_r
         self._core = cv.create_oval(cx - r, ocy - r, cx + r, ocy + r,
-                                    fill="#22d3ee", outline="")
+                                    fill=_TEXT, outline="")
         self._amp_ring = cv.create_oval(cx, ocy, cx, ocy, outline="", width=2)
 
         # Waveform — 19 thin bars, tapered at the ends by a sine envelope so it

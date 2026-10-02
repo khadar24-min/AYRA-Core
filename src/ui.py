@@ -196,6 +196,9 @@ class JarvisUI:
         self._console_call("add_jarvis_text", text)
         self._remote_call("push_line", "jarvis", text)
 
+    def add_ayra_text(self, text: str) -> None:
+        self.add_jarvis_text(text)
+
     def add_system_text(self, text: str) -> None:
         self._console_call("add_system_text", text)
         self._remote_call("push_line", "system", text)
@@ -245,8 +248,8 @@ class JarvisUI:
         else:
             self.mute_event.clear()
         self._console_call("set_muted", muted)
-        self._console_call("add_system_text", "muted — Jarvis will respond in text only." if muted
-                                     else "unmuted — Jarvis will speak again.")
+        self._console_call("add_system_text", "muted — AYRA will respond in text only." if muted
+                                     else "unmuted — AYRA will speak again.")
 
     def _handle_toggle_mute(self) -> None:
         """Tray menu callback. Runs on pystray's thread; UI updates inside
@@ -562,7 +565,7 @@ class JarvisUI:
         path; main() picks up the flag after worker.join() and fires the
         actual relaunch from there."""
         self._relaunch_mode = "normal"
-        self._console_call("add_system_text", "restarting Jarvis…")
+        self._console_call("add_system_text", "restarting AYRA…")
         print("[ui] restart requested — will relaunch after shutdown completes")
         self._handle_quit()
 
@@ -576,7 +579,7 @@ class JarvisUI:
         shutting down by then) but no new instance starts. That's the
         "occasional sudo" tradeoff documented in the M41 milestone."""
         self._relaunch_mode = "elevated"
-        self._console_call("add_system_text", "restarting Jarvis (Administrator)…")
+        self._console_call("add_system_text", "restarting AYRA (Administrator)…")
         print("[ui] elevated restart requested — UAC will fire after shutdown")
         self._handle_quit()
 
