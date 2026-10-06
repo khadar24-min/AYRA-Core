@@ -13,3 +13,11 @@ __pycache__/
 
 piper-sample-generator/
 
+
+.venv/
+backup-before-aistudio/
+__pycache__/
+*.pyc
+.env
+
+.venv-win/

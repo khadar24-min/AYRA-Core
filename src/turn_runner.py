@@ -46,7 +46,7 @@ from src.ui import JarvisUI
 from src.wake_word import monitor_for_wake_word
 
 
-MAX_PAIRS = 10            # cap conversation at 10 exchanges (20 messages)
+MAX_PAIRS = 3            # cap conversation at 3 exchanges (6 messages)
 IDLE_RESET_SEC = 600.0    # 10 min of silence → forget conversation
 
 

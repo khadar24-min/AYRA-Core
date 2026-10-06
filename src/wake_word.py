@@ -2,68 +2,126 @@
 
 from __future__ import annotations
 
+import math
+import os
 import sys
 import threading
 import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import openwakeword
 from openwakeword.model import Model
 
-from src.audio import AudioSession
+if TYPE_CHECKING:
+    from src.audio import AudioSession
 
 WAKEWORD_NAME = "hey_ayra"
 WAKEWORD_MODEL_PATH = "/mnt/c/Users/lokes/Downloads/AYRA-Core/models/hey_ayra.onnx"
 
+# Cooldown / debounce window (seconds) to prevent a single "Hey AYRA" utterance
+# or trailing acoustic resonance from triggering repeatedly.
+WAKEWORD_COOLDOWN_SEC = 2.0
+
+# Minimum audio RMS energy (int16 scale) required to accept a wake-word trigger.
+# Guards against numerical drift on pure digital silence (RMS ~ 0).
+MIN_SPEECH_RMS = 10.0
+
+_last_trigger_ts: float = 0.0
+_last_barge_ts: float = 0.0
+
+
+def reset_cooldown() -> None:
+    """Reset the wake-word debounce timers (used in tests or manual session resets)."""
+    global _last_trigger_ts, _last_barge_ts
+    _last_trigger_ts = 0.0
+    _last_barge_ts = 0.0
+
+
+def compute_rms(chunk: np.ndarray | None) -> float:
+    """Compute Root-Mean-Square (RMS) amplitude of an int16/float32 audio chunk."""
+    if chunk is None or chunk.size == 0:
+        return 0.0
+    x = chunk.astype(np.float32)
+    rms = float(np.sqrt(np.mean(x * x)))
+    return rms if math.isfinite(rms) else 0.0
+
+
+def _resolve_model_path() -> str:
+    """Resolve the custom hey_ayra.onnx path, preferring WAKEWORD_MODEL_PATH
+    (/mnt/c/Users/lokes/Downloads/AYRA-Core/models/hey_ayra.onnx) and falling
+    back to the repository's models/hey_ayra.onnx if relocated."""
+    env_override = os.getenv("AYRA_WAKEWORD_MODEL", "").strip()
+    if env_override and Path(env_override).is_file():
+        return env_override
+    primary = Path(WAKEWORD_MODEL_PATH)
+    if primary.is_file():
+        return str(primary)
+    repo_fallback = Path(__file__).resolve().parent.parent / "models" / "hey_ayra.onnx"
+    if repo_fallback.is_file():
+        return str(repo_fallback)
+    return WAKEWORD_MODEL_PATH
+
 
 def _ensure_models_downloaded() -> None:
-    # The temporary test model is already installed locally.
-    # No download is required.
-    return
+    """Ensure openWakeWord's shared feature extractors (melspectrogram.onnx and
+    embedding_model.onnx) exist locally. Never downloads or activates hey_jarvis."""
+    try:
+        res_dir = Path(openwakeword.__file__).resolve().parent / "resources" / "models"
+        mel_ok = (res_dir / "melspectrogram.onnx").is_file()
+        emb_ok = (res_dir / "embedding_model.onnx").is_file()
+        if not (mel_ok and emb_ok):
+            openwakeword.utils.download_models(["alexa"])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[wake_word] feature model check warning: {exc}", file=sys.stderr)
+
+
+def _instantiate_oww_model(model_path: str) -> Model:
+    """Instantiate an openWakeWord Model loading ONLY the custom hey_ayra.onnx."""
+    if not Path(model_path).is_file():
+        raise FileNotFoundError(f"Wake-word ONNX model not found at: {model_path}")
+    try:
+        return Model(wakeword_models=[model_path], inference_framework="onnx")
+    except TypeError:
+        # Backwards-compatibility with older openWakeWord or test doubles
+        return Model(wakeword_model_paths=[model_path])
 
 
 # Process-wide singleton. Building a Model spins up ONNX Runtime inference
 # sessions, and ORT is notorious for not fully releasing native memory on GC
 # — so the original "new Model() per wake cycle" pattern leaked tens of MB
 # every wake→process→respond round-trip. We build it once and reset() its
-# streaming feature buffers between cycles instead. reset() is confirmed
-# present on the installed openWakeWord Model API.
-#
-# Threading invariant: wait_for_wake_word is called only from listen_loop
-# (the single voice-path thread). The singleton therefore has exactly one
-# consumer thread and needs no lock. A second caller from another thread
-# would have to add one.
-_model: "Model | None" = None
+# streaming feature buffers between cycles instead.
+_model: Model | None = None
 
 
-def _get_model() -> Model:
+def _get_model() -> Model | None:
     global _model
     if _model is None:
-        # First use: download-check (once per process, not per cycle — the
-        # old code re-hit this every wake) then construct.
         _ensure_models_downloaded()
-        _model = Model(wakeword_model_paths=[WAKEWORD_MODEL_PATH])
+        resolved = _resolve_model_path()
+        try:
+            _model = _instantiate_oww_model(resolved)
+            keys = list(getattr(_model, "models", {}).keys())
+            print(
+                f"[wake_word] loaded custom ONNX model '{resolved}' (keys={keys})",
+                file=sys.stderr,
+            )
+        except Exception as exc:  # noqa: BLE001 — avoid crashing if model unavailable
+            print(
+                f"[wake_word] ERROR: could not load wake-word model at '{resolved}': {exc}",
+                file=sys.stderr,
+            )
+            return None
     else:
-        # Clear accumulated streaming features so stale audio from the
-        # previous cycle doesn't bias the first predictions of this one.
-        # main.py already drains the AudioSession before calling us, so a
-        # clean feature buffer matches a clean audio buffer.
-        _model.reset()
+        try:
+            _model.reset()
+        except Exception:  # noqa: BLE001
+            pass
     return _model
 
 
-# 2026-08-02: armed-mode listening heartbeat. The user reported Jarvis "couldn't
-# hear anything, as if the mic wasn't working" during an armed window — and the
-# log could not settle it, because this loop only EVER logs on a successful
-# detection. Silence in the log is identical for "no audio reached us", "audio
-# arrived but scored 0.3", and "nobody actually spoke". Those need very
-# different fixes, so the loop now periodically reports the peak score and peak
-# input amplitude it has seen.
-#
-# Armed-only and rate-limited by design: this is the tightest loop in the
-# process and runs all day, so an unconditional heartbeat would add ~700 lines
-# a day for the ~1% of the time the question is live. `armed_probe` keeps it to
-# exactly the window where the symptom occurs.
 _HEARTBEAT_SEC = 30.0
 
 
@@ -72,46 +130,101 @@ def wait_for_wake_word(
     threshold: float = 0.5,
     shutdown_event: threading.Event | None = None,
     reset_event: threading.Event | None = None,
-    armed_probe: "callable | None" = None,
+    armed_probe: Callable[[], bool] | None = None,
     challenge_event: threading.Event | None = None,
+    cooldown_sec: float = WAKEWORD_COOLDOWN_SEC,
+    min_rms: float = MIN_SPEECH_RMS,
 ) -> None:
-    """Block reading from `session` until the wake word scores >= threshold,
-    or until shutdown_event / reset_event is set. Caller distinguishes the
-    three exit paths by inspecting the events post-return.
+    """Block reading from `session` until 'Hey AYRA' scores >= threshold,
+    or until shutdown_event / reset_event / challenge_event is set.
 
-    Audio chunks arrive every ~80ms, so the event checks at loop top mean
-    quits and resets propagate within one chunk — fast enough to feel
-    instant, and slow enough that we don't burn CPU spinning.
-
-    `armed_probe` (optional) — a zero-arg predicate, normally
-    SecurityWatcher.is_armed. While it returns True, log a periodic
-    peak-score/peak-amplitude heartbeat so an "is it deaf?" report can be
-    settled from the log. Never called if None; any failure is swallowed
-    (a diagnostic must not be able to break the listening loop)."""
+    Includes:
+      - Cooldown/debounce protection to avoid repeated triggers from a single utterance
+      - Silence & noise floor gating (min_rms)
+      - Graceful degradation if the ONNX model is unavailable
+      - Diagnostic logging of score, audio RMS, and threshold
+    """
+    global _last_trigger_ts
     model = _get_model()
 
-    print("[wake_word] listening for 'Hey AYRA' (temporary test model)...", file=sys.stderr)
+    if model is None:
+        print(
+            "[wake_word] WARNING: wake-word model unavailable; standing by without crashing.",
+            file=sys.stderr,
+        )
+        while True:
+            if shutdown_event is not None and shutdown_event.is_set():
+                return
+            if reset_event is not None and reset_event.is_set():
+                return
+            if challenge_event is not None and challenge_event.is_set():
+                return
+            time.sleep(0.1)
+
+    print(
+        f"[wake_word] listening for 'Hey AYRA' (model={WAKEWORD_NAME}, threshold={threshold:.2f})...",
+        file=sys.stderr,
+    )
     peak_score = 0.0
     peak_amp = 0
     last_beat = time.monotonic()
+
     while True:
         if shutdown_event is not None and shutdown_event.is_set():
             return
         if reset_event is not None and reset_event.is_set():
             return
-        # 2026-08-16: a security challenge opened while we were parked here.
-        # Return so the caller can capture the passphrase WITHOUT the user
-        # having to say "Hey AYRA" first. Without this early exit the whole
-        # feature is dead on arrival: this call blocks until a wake word, so a
-        # challenge starting mid-wait could never be noticed. Checked at loop
-        # top like the others, so it propagates within one 80 ms chunk.
         if challenge_event is not None and challenge_event.is_set():
             return
+
         chunk = session.read()
-        scores = model.predict(chunk)
-        score = scores[WAKEWORD_NAME]
+        if chunk is None or getattr(chunk, "size", 0) == 0:
+            continue
+
+        rms = compute_rms(chunk)
+        try:
+            scores = model.predict(chunk)
+            raw_score = scores.get(WAKEWORD_NAME, 0.0) if isinstance(scores, dict) else scores[WAKEWORD_NAME]
+            score = float(raw_score)
+            if not math.isfinite(score):
+                score = 0.0
+        except Exception as exc:  # noqa: BLE001
+            print(f"[wake_word] prediction error on audio chunk: {exc}", file=sys.stderr)
+            continue
+
         if score >= threshold:
-            print(f"[wake_word] detected (score={score:.2f})", file=sys.stderr)
+            now = time.monotonic()
+            # Guard 1: Reject phantom triggers on pure digital silence
+            if rms < min_rms and getattr(chunk, "ndim", 1) > 0 and np.max(np.abs(chunk)) < min_rms:
+                try:
+                    model.reset()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+
+            # Guard 2: Cooldown / debounce so one utterance never triggers twice
+            if _last_trigger_ts > 0.0 and (now - _last_trigger_ts) < cooldown_sec:
+                print(
+                    f"[wake_word] debounced duplicate trigger "
+                    f"(score={score:.3f}, rms={rms:.1f}, elapsed={now - _last_trigger_ts:.2f}s < {cooldown_sec:.1f}s)",
+                    file=sys.stderr,
+                )
+                try:
+                    model.reset()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+
+            _last_trigger_ts = now
+            try:
+                model.reset()
+            except Exception:  # noqa: BLE001
+                pass
+            print(
+                f"[wake_word] detected '{WAKEWORD_NAME}' "
+                f"(score={score:.3f}, rms={rms:.1f}, threshold={threshold:.2f})",
+                file=sys.stderr,
+            )
             return
 
         if armed_probe is not None:
@@ -131,36 +244,41 @@ def wait_for_wake_word(
                 except Exception:  # noqa: BLE001
                     armed = False
                 if armed:
-                    # peak_amp ~0 => no audio is reaching us (mic/stream fault).
-                    # peak_amp healthy + low peak_score => audio is arriving but
-                    # the wake word isn't firing (detection/threshold problem).
-                    print(f"[wake_word] armed heartbeat: peak_score="
-                          f"{peak_score:.2f} (threshold {threshold:.2f}) "
-                          f"peak_amp={peak_amp}", file=sys.stderr)
+                    print(
+                        f"[wake_word] armed heartbeat: peak_score="
+                        f"{peak_score:.2f} (threshold {threshold:.2f}) "
+                        f"peak_amp={peak_amp}",
+                        file=sys.stderr,
+                    )
                 peak_score = 0.0
                 peak_amp = 0
 
 
 # M52 — barge-in. The monitor below runs openWakeWord *concurrently* with TTS
-# playback, on its own thread, so the user can cut Jarvis off mid-reply with
-# "Hey AYRA". It needs its own Model: _model (above) documents a "one
-# consumer thread" invariant and the monitor is a different thread from
-# listen_loop. Two ORT inference sessions cost a little extra resident memory,
-# but each is built ONCE and reset() between turns — the same anti-leak
-# discipline _get_model uses (ORT doesn't fully release native memory on GC).
-_barge_model: "Model | None" = None
+# playback, on its own thread, so the user can cut AYRA off mid-reply with
+# "Hey AYRA". It uses its own singleton Model instance for thread safety.
+_barge_model: Model | None = None
 
 
-def _get_barge_model() -> Model:
-    """Process-wide singleton for the barge-in monitor thread — see the note
-    above for why it's separate from _model. Built lazily on first barge-in,
-    reset() on subsequent turns to clear stale streaming features."""
+def _get_barge_model() -> Model | None:
+    """Process-wide singleton for the barge-in monitor thread."""
     global _barge_model
     if _barge_model is None:
         _ensure_models_downloaded()
-        _barge_model = Model(wakeword_model_paths=[WAKEWORD_MODEL_PATH])
+        resolved = _resolve_model_path()
+        try:
+            _barge_model = _instantiate_oww_model(resolved)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[barge-in] ERROR: could not load wake-word model at '{resolved}': {exc}",
+                file=sys.stderr,
+            )
+            return None
     else:
-        _barge_model.reset()
+        try:
+            _barge_model.reset()
+        except Exception:  # noqa: BLE001
+            pass
     return _barge_model
 
 
@@ -169,51 +287,66 @@ def monitor_for_wake_word(
     interrupt_event: threading.Event,
     stop_event: threading.Event,
     threshold: float = 0.5,
+    cooldown_sec: float = WAKEWORD_COOLDOWN_SEC,
+    min_rms: float = MIN_SPEECH_RMS,
 ) -> None:
     """Barge-in monitor (M52). Runs on its own thread for the duration of a
     TTS reply: reads mic chunks, scores them with openWakeWord, and on a
-    "Hey AYRA" detection sets `interrupt_event` — and does *nothing else*.
-
-    It deliberately touches no audio API. The actual playback cut (sd.stop)
-    is performed by speak_streaming, on the thread that owns the WASAPI/COM
-    output stream — those streams are COM space-threaded on Windows and
-    calling sd.stop() from this monitor thread hard-crashes the process (the
-    original M52 bug; cf. project_wasapi_thread_audio_owner). The single
-    Event is the entire cross-thread contract: speak_streaming's poll loop
-    and stream_response both watch it.
-
-    Exits on its own detection, or when `stop_event` is set — which is how
-    the caller winds it down when a reply finished normally with no barge-in.
-    session.read() returns every ~80ms (the mic InputStream is continuous),
-    so a stop request is honoured within one chunk.
-
-    Echo-safety: the mic captures Jarvis's *own* TTS output while this runs,
-    but the wake word cannot self-trigger — Jarvis never says "Hey AYRA"
-    in a reply. That is the whole reason the trigger is the wake word and
-    not a bare "stop" (which Jarvis saying "stop" would trip on himself).
-
-    Threading: this is the sole AudioSession reader while it runs. The
-    voice-path thread that owns the session is blocked inside speak_streaming
-    (playback) for exactly this window, and the text path is serialized out
-    by processing_lock — so there is no concurrent reader to race.
-    """
+    'Hey AYRA' detection sets `interrupt_event`."""
+    global _last_barge_ts
     model = _get_barge_model()
+    if model is None:
+        print("[barge-in] wake-word model unavailable — monitor standing by", file=sys.stderr)
+        stop_event.wait()
+        return
+
     print("[barge-in] monitoring for 'Hey AYRA' during playback", file=sys.stderr)
     while not stop_event.is_set():
         try:
             chunk = session.read()
-        except Exception as exc:  # noqa: BLE001 — a dead mic mid-reply just
-            # ends the monitor (no barge-in possible); the reply keeps playing
-            # and the voice loop's supervisor handles the mic on its next read.
-            print(f"[barge-in] mic read failed ({exc}) — monitor exiting",
-                  file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[barge-in] mic read failed ({exc}) — monitor exiting",
+                file=sys.stderr,
+            )
             return
         if stop_event.is_set():
             return
-        scores = model.predict(chunk)
-        if scores[WAKEWORD_NAME] >= threshold:
+        if chunk is None or getattr(chunk, "size", 0) == 0:
+            continue
+
+        rms = compute_rms(chunk)
+        try:
+            scores = model.predict(chunk)
+            raw_score = scores.get(WAKEWORD_NAME, 0.0) if isinstance(scores, dict) else scores[WAKEWORD_NAME]
+            score = float(raw_score)
+            if not math.isfinite(score):
+                score = 0.0
+        except Exception as exc:  # noqa: BLE001
+            print(f"[barge-in] prediction error: {exc}", file=sys.stderr)
+            continue
+
+        if score >= threshold:
+            if rms < min_rms and getattr(chunk, "ndim", 1) > 0 and np.max(np.abs(chunk)) < min_rms:
+                try:
+                    model.reset()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            now = time.monotonic()
+            if _last_barge_ts > 0.0 and (now - _last_barge_ts) < cooldown_sec:
+                try:
+                    model.reset()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            _last_barge_ts = now
+            try:
+                model.reset()
+            except Exception:  # noqa: BLE001
+                pass
             print(
-                f"[barge-in] interrupt detected (score={scores[WAKEWORD_NAME]:.2f})",
+                f"[barge-in] interrupt detected '{WAKEWORD_NAME}' (score={score:.3f}, rms={rms:.1f})",
                 file=sys.stderr,
             )
             interrupt_event.set()

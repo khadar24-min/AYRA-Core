@@ -193,7 +193,7 @@ def load() -> Config:
         # capture to a specific input — the right call for a dedicated mic so
         # it need not be the system default and a USB shuffle can't reroute
         # Jarvis. Resolved to an index at startup (see audio.resolve_input_device).
-        mic_device=os.getenv("JARVIS_MIC_DEVICE", "").strip(),
+        mic_device=os.getenv("JARVIS_MIC_DEVICE", "4").strip() or "4",
         # M69 — speaker identification. The recognize-threshold is tuned
         # fail-open (below the measured you-vs-you/you-vs-media midpoint) so a
         # degraded clip of the real user still passes. The gate is opt-in and
