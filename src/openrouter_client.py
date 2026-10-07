@@ -4,7 +4,10 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None  # type: ignore[assignment]
 
 
 @dataclass

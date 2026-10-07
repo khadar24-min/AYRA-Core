@@ -493,6 +493,59 @@ class TurnRunner:
         # same reduced tool boundary as the phone — no system/shell/file/code).
         text_only = origin in ("phone_text", "discord")
         restricted = origin in ("phone_text", "phone_voice", "discord")
+        muted = self._ui.is_muted()
+        silent = muted or text_only
+        pc_silent = silent or reply_audio is not None
+
+        # --- Phase 1: Local Intent Fast-Path (0 LLM tokens) ---
+        from src.local_intents import check_local_intent
+        from src.agent_loop import get_agent_loop
+        _current_loop = get_agent_loop()
+        _active_summary = _current_loop.active_plan.summary() if _current_loop.active_plan else None
+        local_reply = check_local_intent(text, active_task_summary=_active_summary)
+        if local_reply is not None:
+            with self._lock:
+                self._ui.add_jarvis_text(local_reply)
+                self._emit_remote_reply(reply_text, local_reply)
+                if not pc_silent:
+                    self._ui.set_state(State.SPEAKING)
+                    try:
+                        speak(local_reply, language=language)
+                    except Exception:
+                        pass
+                    self._ui.set_state(State.IDLE)
+            return False
+
+        # --- Phase 2: Autonomous Desktop Agent Loop ---
+        from src.agent_planner import is_computer_task
+        if is_computer_task(text) and not restricted:
+            with self._lock:
+                self._begin_turn(text, language, attachments)
+                self._ui.set_state(State.THINKING)
+                task_gen = _current_loop.run_task(text)
+                final_milestone = ""
+                try:
+                    for milestone in task_gen:
+                        final_milestone = milestone
+                        self._ui.add_jarvis_text(milestone)
+                        self._emit_remote_reply(reply_text, milestone)
+                        if not pc_silent:
+                            self._ui.set_state(State.SPEAKING)
+                            try:
+                                speak(milestone, language=language)
+                            except Exception:
+                                pass
+                            self._ui.set_state(State.THINKING)
+                except Exception as task_err:
+                    final_milestone = f"Task encountered an error: {task_err}"
+                    self._ui.add_jarvis_text(final_milestone)
+
+                self._ui.set_state(State.IDLE)
+                self._history.append({"role": "assistant", "content": final_milestone})
+                _trim_history(self._history)
+                self._last_turn_time = time.time()
+                self._memory.record_turn(text, final_milestone, language, speaker=speaker_name)
+            return False
 
         with self._lock:
             # Seal any stale session, capture session language, surface + append

@@ -11,11 +11,14 @@ import sys
 import time
 from typing import Optional
 
-import numpy as np
+try:
+    import numpy as np
+except Exception:
+    np = None  # type: ignore[assignment]
 
 try:
     import sounddevice as sd
-except OSError:
+except (OSError, ImportError):
     sd = None  # type: ignore[assignment]
 
 CHUNK_SAMPLES = 1280  # 80 ms @ 16 kHz; matches openWakeWord's window

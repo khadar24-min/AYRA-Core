@@ -40,8 +40,14 @@ import threading
 import time
 from collections import deque
 
-import numpy as np
-import sounddevice as sd
+try:
+    import numpy as np
+    import sounddevice as sd
+    _HAS_AEC_DEPS = True
+except Exception:
+    np = None  # type: ignore
+    sd = None  # type: ignore
+    _HAS_AEC_DEPS = False
 
 SAMPLE_RATE = 16_000
 FRAME = 256                  # pyaec frame (16 ms) — must match Aec(frame_size)
@@ -75,7 +81,7 @@ DEBUG = os.getenv("JARVIS_BARGE_DEBUG", "").strip() not in ("", "0", "false", "F
 def is_enabled() -> bool:
     """Hands-free barge-in is opt-in (default off) until live-verified — the
     M52 wake-word barge-in is the safe default. Enable with JARVIS_HANDS_FREE_BARGE=1."""
-    return os.getenv("JARVIS_HANDS_FREE_BARGE", "").strip() not in ("", "0", "false", "False")
+    return _HAS_AEC_DEPS and os.getenv("JARVIS_HANDS_FREE_BARGE", "").strip() not in ("", "0", "false", "False")
 
 
 class BargeDetector:

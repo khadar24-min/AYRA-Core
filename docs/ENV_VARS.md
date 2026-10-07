@@ -193,6 +193,12 @@ Notes:
 |----------|---------|---------|---------|
 | `JARVIS_INTERPRETER_LANGS` | `""` (→ `en,es`) | config.py | Language pair as `primary,secondary`. Each side is spoken in that language's `VOICE_BY_LANG` voice. |
 
+## Wake Word
+
+| Variable | Default | Read in | Purpose |
+|---|---|---|---|
+| `AYRA_WAKEWORD_MODEL` | `""` | `wake_word.py` | Path to the custom AYRA wake-word model. |
+
 ## Ambient HUD (M84)
 
 | Variable | Default | Read in | Purpose |

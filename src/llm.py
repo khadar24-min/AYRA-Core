@@ -978,13 +978,11 @@ def stream_response(
             last_user_text = _content if isinstance(_content, str) else str(_content)
             break
 
-    import re as _re
-    _is_time_request = bool(_re.search(
-        r"\b(what|tell|give|show)\b.*\b(time|clock)\b|\btime\s+(is|now)\b",
-        last_user_text.lower()
-    ))
-
-    request_tools = [] if _is_time_request else tools
+    # Dynamic tool selection: instead of dumping all 36+ tools onto every request
+    # (causing prompt-token-limit overflow), dynamically select only the relevant tools.
+    from src.tool_router import get_tool_router
+    router = get_tool_router()
+    request_tools = router.filter_tools(tools, last_user_text)
 
     stream_kwargs: dict = {
         "model": model,
